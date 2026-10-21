@@ -17,14 +17,24 @@ BeforeAll {
                 New-Item $OutputDirectory -ItemType Directory -Force | Out-Null
                 function Get-Module { [pscustomobject]@{ Version = [version]'2.9.0' } }
                 function Import-Module { }
-                function Connect-AzDevOps { }
+                function Connect-AzDevOps {
+                    param($Organization, $OrganizationId, $AccessToken)
+                    if ($OrganizationId -ne '11111111-1111-1111-1111-111111111111') { throw 'The organization instance ID was not resolved.' }
+                }
                 function Export-AzDevOpsOrganizationRuleData {
-                    param($OutputPath)
+                    param($OutputPath, $CompletenessReportPath, [switch]$Strict)
+                    if ($Scenario -in 'Incomplete', 'PartialNoThrow', 'UnavailableNoThrow') {
+                        $status = if ($Scenario -eq 'UnavailableNoThrow') { 'Unavailable' } else { 'Partial' }
+                        if ($CompletenessReportPath) { @{ Status = $status } | ConvertTo-Json | Set-Content $CompletenessReportPath }
+                        if ($Strict -and $Scenario -eq 'Incomplete') { throw 'Assessment collection is incomplete.' }
+                    } elseif ($CompletenessReportPath) { '{"Status":"Complete"}' | Set-Content $CompletenessReportPath }
                     '{}' | Set-Content (Join-Path $OutputPath 'input.json')
                 }
                 function New-PSRuleOption { }
+                function Start-Sleep { }
                 function Assert-PSRule {
-                    param($ResultVariable, $OutputPath)
+                    param($ResultVariable, $OutputPath, $InputPath)
+                    if (@($InputPath | Where-Object { $_ -match 'collection-status.json' }).Count) { throw 'Collection status entered the target stream.' }
                     $results = @('Pass', 'Fail' | ForEach-Object {
                         [pscustomobject]@{
                             RuleName = 'Test.Rule'; TargetName = 'test-resource'; TargetType = 'Azure.DevOps.Project'
@@ -34,6 +44,7 @@ BeforeAll {
                     })
                     if ($Scenario -eq 'Empty') { $results = @() }
                     if ($Scenario -eq 'ExecutionError') { $results[1].Outcome = 'Error' }
+                    if ($Scenario -eq 'Skipped') { $results | ForEach-Object { $_.Outcome = 'None' } }
                     Set-Variable -Name $ResultVariable -Scope 1 -Value $results
                     '{}' | Set-Content $OutputPath
                 }
@@ -47,7 +58,11 @@ BeforeAll {
                 function Invoke-WebRequest {
                     if ($Scenario -eq 'IngestionFailure') { throw 'Ingestion failed.' }
                 }
-                function Invoke-RestMethod { return '{"tables":[{"rows":[[2,1,1]]}]}' | ConvertFrom-Json }
+                function Invoke-RestMethod {
+                    param($Uri)
+                    if ($Uri -match '/_apis/connectionData$') { return [pscustomobject]@{ instanceId = '11111111-1111-1111-1111-111111111111' } }
+                    return '{"tables":[{"rows":[[2,1,1]]}]}' | ConvertFrom-Json
+                }
                 try {
                     & $AssessmentPath -ModuleManifestPath 'test-module.psd1' -Organization test-org
                     [pscustomobject]@{ Error = $null }
@@ -65,6 +80,33 @@ BeforeAll {
 }
 
 Describe 'Assessment report integration' {
+    It 'validates the completeness report independently for <Scenario>' -ForEach @(@{ Scenario = 'PartialNoThrow' }, @{ Scenario = 'UnavailableNoThrow' }) {
+        $output = "$TestDrive/$Scenario"
+        $assessment = Invoke-TestAssessment $Scenario $output
+        $assessment.Error | Should -Match 'collection is incomplete'
+        Test-Path "$output/psrule-results.sarif" | Should -BeFalse
+        Test-Path "$output/psrule-dashboard.html" | Should -BeFalse
+        $assessment.Messages | Should -Not -Match 'PSRuleReportReady'
+    }
+
+    It 'does not publish an assessment containing only skipped controls' {
+        $output = "$TestDrive/skipped"
+        $assessment = Invoke-TestAssessment Skipped $output
+        $assessment.Error | Should -Match 'zero evaluated rule results'
+        Test-Path "$output/psrule-dashboard.html" | Should -BeFalse
+        $assessment.Messages | Should -Not -Match 'PSRuleReportReady'
+    }
+
+    It 'retains completeness evidence and prevents evaluation and publication after incomplete collection' {
+        $output = "$TestDrive/incomplete"
+        $assessment = Invoke-TestAssessment Incomplete $output
+        $assessment.Error | Should -Match 'collection is incomplete'
+        (Get-Content "$output/collection-status.json" -Raw | ConvertFrom-Json).Status | Should -Be Partial
+        Test-Path "$output/psrule-results.sarif" | Should -BeFalse
+        Test-Path "$output/psrule-dashboard.html" | Should -BeFalse
+        $assessment.Messages | Should -Not -Match 'PSRuleReportReady'
+    }
+
     It 'retains the HTML, Markdown, and SARIF and announces report readiness before ingestion fails' {
         $output = "$TestDrive/ingestion-failure"
         $assessment = Invoke-TestAssessment IngestionFailure $output

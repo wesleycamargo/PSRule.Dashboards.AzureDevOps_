@@ -19,6 +19,27 @@ workbooks to your Azure subscription.
 
 ### Pipeline run dashboard
 
+Collection runs in strict mode with a fresh input directory for every invocation.
+Incomplete evidence stops rule evaluation and publishing. The separate
+`collection-status.json` artifact records project discovery, project collectors,
+and organization collectors; it is never evaluated as a rule target. Security
+violations in a complete assessment remain advisory findings.
+
+The assessment also reads the separate completeness report and requires `Complete`
+before evaluating any target. An assessment with only skipped controls cannot be
+published. `None`, `Ignore`, unavailable evidence and absent controls are not
+compliance passes; dashboard pass totals count only actual `Pass` outcomes.
+Production applicability can be configured through the companion rules module's
+[`productionResources` and `productionNamePatterns`](https://github.com/wesleycamargo/PSRule.Rules.AzureDevOps/blob/fix/assessment-trust/docs/production-classification.md).
+Use PSRule `-Outcome All` when exporting results that must include inapplicable
+controls. Default assessment output describes evaluated checkpoints only.
+
+The HTML remains a single self-contained file with embedded data, JavaScript and
+styles. Existing report filenames, pipeline artifacts and the
+[Publish HTML Reports extension](https://marketplace.visualstudio.com/items?itemName=LakshayKaushik.PublishHTMLReports)
+contract are unchanged. Local verification uses `Invoke-Pester ./tests -CI` and
+`node tests/PipelineReport.Browser.Tests.cjs` (requires Playwright and Chromium).
+
 The manual assessment pipeline also generates `psrule-dashboard.html` and
 `psrule-summary.md` directly from the detailed assessment results. The dashboard
 contains totals, failure charts by rule and resource, and a findings table with
